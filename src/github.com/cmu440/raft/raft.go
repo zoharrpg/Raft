@@ -34,21 +34,31 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cmu440/rpc"
 )
 
 // Set to false to disable debug logs completely
 // Make sure to set kEnableDebugLogs to false before submitting
-const kEnableDebugLogs = true
+const kEnableDebugLogs = false
 
 // Set to true to log to stdout instead of file
-const kLogToStdout = true
+const kLogToStdout = false
 
 // Change this to output logs to a different directory
 const kLogOutputDir = "./raftlogs/"
+
+type State int
+
+const (
+	FOLLOWER State = iota
+	CANDIDATE
+	LEADER
+)
 
 // ApplyCommand
 // ========
@@ -59,6 +69,10 @@ const kLogOutputDir = "./raftlogs/"
 type ApplyCommand struct {
 	Index   int
 	Command interface{}
+}
+type LogStruct struct {
+	Commend ApplyCommand
+	Term    int
 }
 
 // Raft struct
@@ -74,10 +88,37 @@ type Raft struct {
 	// you are free to remove it completely.
 	logger *log.Logger // We provide you with a separate logger per peer.
 
+	ElectionTimeout int
+
+	Interval int
+
+	currentTerm int
+
+	state State
+
+	votedFor int
+
+	applyCh chan ApplyCommand
+
+	hearthbeat_signal chan int
+
+	step_down_signal chan int
+
+	vote_signal chan bool
+
+	// logs []string
+
+	// commitIndex int
+
+	// lastApplied int
+
+	// nextIndex []int
+
+	// matchindex []int
+
 	// TODO - Your data here (2A, 2B).
 	// Look at the Raft paper's Figure 2 for a description of what
 	// state a Raft peer should maintain
-
 }
 
 // GetState
@@ -89,6 +130,9 @@ func (rf *Raft) GetState() (int, int, bool) {
 	var me int
 	var term int
 	var isleader bool
+	me = rf.me
+	term = rf.getTerm()
+	isleader = rf.stateInfo() == LEADER
 	// TODO - Your code here (2A)
 	return me, term, isleader
 }
@@ -100,6 +144,9 @@ func (rf *Raft) GetState() (int, int, bool) {
 //
 // # Please note: Field names must start with capital letters!
 type RequestVoteArgs struct {
+	Term        int
+	CandidateId int
+
 	// TODO - Your data here (2A, 2B)
 }
 
@@ -110,7 +157,21 @@ type RequestVoteArgs struct {
 //
 // # Please note: Field names must start with capital letters!
 type RequestVoteReply struct {
+	Term        int
+	VoteGranted bool
+
 	// TODO - Your data here (2A)
+}
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	Entries      []LogStruct
+	LeaderCommit int
+}
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
 }
 
 // RequestVote
@@ -119,6 +180,26 @@ type RequestVoteReply struct {
 // Example RequestVote RPC handler
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO - Your code here (2A, 2B)
+	// step down when find higher term
+	if args.Term > rf.getTerm() && (rf.stateInfo() == CANDIDATE || rf.stateInfo() == LEADER) {
+		rf.setTerm(args.Term)
+		reply.VoteGranted = false
+		reply.Term = rf.getTerm()
+		return
+	}
+	if args.Term > rf.getTerm() && rf.stateInfo() == FOLLOWER {
+		rf.setTerm(args.Term)
+		rf.votedFor = args.CandidateId
+		rf.hearthbeat_signal <- 1
+		reply.VoteGranted = true
+		reply.Term = rf.getTerm()
+		return
+	}
+	reply.VoteGranted = false
+
+	reply.Term = rf.getTerm()
+	return
+
 }
 
 // sendRequestVote
@@ -163,9 +244,58 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in the struct passed over RPC, and
 // that the caller passes the address of the reply struct with "&",
 // not the struct itself
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+
+	if !ok {
+		rf.vote_signal <- false
+		rf.logger.Println("Call error")
+		return
+	}
+
+	if reply.Term > rf.getTerm() {
+		rf.vote_signal <- reply.VoteGranted
+		// may cause problem
+
+		rf.setTerm(reply.Term)
+		rf.step_down_signal <- reply.Term
+		return
+
+	}
+	rf.vote_signal <- reply.VoteGranted
+	return
+
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term == rf.getTerm() && len(args.Entries) == 0 {
+		rf.hearthbeat_signal <- 1
+		reply.Term = rf.getTerm()
+		reply.Success = true
+		return
+	}
+	if args.Term > rf.getTerm() && len(args.Entries) == 0 {
+		rf.setTerm(args.Term)
+		rf.hearthbeat_signal <- 1
+		reply.Term = rf.getTerm()
+		reply.Success = true
+		return
+	}
+
+	reply.Term = rf.getTerm()
+	reply.Success = false
+
+}
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if ok {
+		if reply.Term > rf.getTerm() {
+			rf.setTerm(reply.Term)
+			rf.step_down_signal <- reply.Term
+			return
+		}
+	}
+
 }
 
 // PutCommand
@@ -209,6 +339,138 @@ func (rf *Raft) PutCommand(command interface{}) (int, int, bool) {
 // turn off debug output from this instance
 func (rf *Raft) Stop() {
 	// TODO - Your code here, if desired
+}
+func (rf *Raft) initState(state State) {
+	rf.mux.Lock()
+	defer rf.mux.Unlock()
+
+	rf.state = state
+
+}
+
+func (rf *Raft) ProcessFollowerState() {
+
+	rf.initState(FOLLOWER)
+	//rf.Clear()
+	// reset data
+
+	for {
+
+		select {
+		case <-rf.hearthbeat_signal:
+			rf.logger.Println("get heartbeat")
+		case <-time.After(time.Duration(rf.ElectionTimeout) * time.Millisecond):
+
+			go rf.ProcessCandidateState()
+			rf.logger.Println("Follower to Candidate")
+			return
+
+		}
+	}
+
+}
+
+func (rf *Raft) ProcessCandidateState() {
+	rf.initState(CANDIDATE)
+	//rf.Clear()
+	// reset data channel
+
+	// reset channel
+	//rf.vote_signal = make(chan bool)
+
+	rf.votedFor = rf.me
+	t := rf.getTerm() + 1
+	rf.setTerm(t)
+	leader_signal := make(chan bool)
+	go rf.ProcessElection(leader_signal, rf.getTerm())
+
+	select {
+
+	case <-leader_signal:
+		go rf.ProcessLeader()
+		return
+
+	case <-rf.step_down_signal:
+		rf.logger.Println("Canadidate to follower")
+		go rf.ProcessFollowerState()
+		return
+
+	case <-time.After(time.Duration(rf.ElectionTimeout) * time.Millisecond):
+		go rf.ProcessCandidateState()
+		return
+
+	}
+
+}
+
+func (rf *Raft) ProcessElection(leader_signal chan bool, Term int) {
+
+	for peer := range rf.peers {
+		if peer != rf.me {
+			reply := RequestVoteReply{}
+			args := RequestVoteArgs{CandidateId: rf.me, Term: Term}
+			go rf.sendRequestVote(peer, &args, &reply)
+
+		}
+	}
+	vote_count := 1
+
+	for i := 0; i < len(rf.peers)-1; i++ {
+		isVoted := <-rf.vote_signal
+		if isVoted {
+			vote_count++
+			if vote_count > len(rf.peers)/2 {
+				leader_signal <- true
+				return
+			}
+		}
+	}
+
+}
+
+func (rf *Raft) ProcessLeader() {
+	rf.initState(LEADER)
+	//rf.Clear()
+
+	for peer := range rf.peers {
+		if peer != rf.me {
+			args := AppendEntriesArgs{Term: rf.getTerm(), LeaderId: rf.me}
+			reply := AppendEntriesReply{}
+			go rf.sendAppendEntries(peer, &args, &reply)
+		}
+
+	}
+
+	ticker := time.NewTicker(time.Duration(rf.Interval) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			for peer := range rf.peers {
+				if peer != rf.me {
+					args := AppendEntriesArgs{}
+					reply := AppendEntriesReply{}
+					go rf.sendAppendEntries(peer, &args, &reply)
+				}
+
+			}
+		case <-rf.step_down_signal:
+			rf.logger.Println("Canadidate to follower")
+			go rf.ProcessFollowerState()
+			go close(rf.step_down_signal)
+			return
+
+		}
+
+	}
+
+}
+
+func (rf *Raft) Clear() {
+	rf.hearthbeat_signal = make(chan int)
+	rf.step_down_signal = make(chan int)
+	rf.vote_signal = make(chan bool)
 }
 
 // NewPeer
@@ -257,7 +519,48 @@ func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 		rf.logger = log.New(ioutil.Discard, "", 0)
 	}
 
+	rf.applyCh = applyCh
+
+	rf.hearthbeat_signal = make(chan int)
+	rf.votedFor = -1
+	rf.currentTerm = 0
+
+	rf.state = FOLLOWER
+	rf.Interval = 150
+	rf.ElectionTimeout = RandIntBetween(300, 600)
+	rf.vote_signal = make(chan bool)
+	rf.step_down_signal = make(chan int)
+
+	go rf.ProcessFollowerState()
+
 	// TODO - Your initialization code here (2A, 2B)
 
 	return rf
+}
+func RandIntBetween(min, max int) int {
+
+	return min + rand.Intn(max-min)
+}
+func (rf *Raft) setVotedFor(candidateID int) {
+	rf.mux.Lock()
+	defer rf.mux.Unlock()
+	rf.votedFor = candidateID
+
+}
+func (rf *Raft) getTerm() int {
+	rf.mux.Lock()
+	defer rf.mux.Unlock()
+	return rf.currentTerm
+}
+func (rf *Raft) stateInfo() State {
+	rf.mux.Lock()
+	defer rf.mux.Unlock()
+	return rf.state
+}
+
+func (rf *Raft) setTerm(term int) {
+	rf.mux.Lock()
+	defer rf.mux.Unlock()
+	rf.currentTerm = term
+
 }
