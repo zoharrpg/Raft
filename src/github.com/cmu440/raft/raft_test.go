@@ -118,7 +118,6 @@ func TestSmallPartitionNoConsensusHidden2A(t *testing.T) {
 
 	fmt.Printf("======================= END =======================\n\n")
 }
-
 func TestLargePartitionNoConsensusHidden2A(t *testing.T) {
 	fmt.Printf("==================== 11 SERVERS ====================\n")
 	servers := 11
