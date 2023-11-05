@@ -40,29 +40,29 @@ func TestInitialElection2A(t *testing.T) {
 	fmt.Printf("======================= END =======================\n\n")
 }
 
-//func TestLeaderConsistencyHidden2A(t *testing.T) {
-//	fmt.Printf("==================== 3 SERVERS ====================\n")
-//	servers := 3
-//	cfg := make_config(t, servers, false)
-//	defer cfg.cleanup()
-//	fmt.Printf("Basic 1 leader\n")
-//	leader1 := cfg.checkOneLeader()
-//	fmt.Printf("Disconnecting leader\n")
-//	cfg.disconnect(leader1)
-//
-//	fmt.Printf("Checking for a new leader\n")
-//	leader2 := cfg.checkOneLeader()
-//	fmt.Printf("Reconnecting old leader\n")
-//	cfg.connect(leader1)
-//	fmt.Printf("Checking current leader\n")
-//	current := cfg.checkOneLeader()
-//
-//	if current != leader2 {
-//		cfg.t.Fatalf("Leader changes after old leader join the pool!")
-//	}
-//
-//	fmt.Printf("======================= END =======================\n\n")
-//}
+func TestLeaderConsistencyHidden2A(t *testing.T) {
+	fmt.Printf("==================== 3 SERVERS ====================\n")
+	servers := 3
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+	fmt.Printf("Basic 1 leader\n")
+	leader1 := cfg.checkOneLeader()
+	fmt.Printf("Disconnecting leader\n")
+	cfg.disconnect(leader1)
+
+	fmt.Printf("Checking for a new leader\n")
+	leader2 := cfg.checkOneLeader()
+	fmt.Printf("Reconnecting old leader\n")
+	cfg.connect(leader1)
+	fmt.Printf("Checking current leader\n")
+	current := cfg.checkOneLeader()
+
+	if current != leader2 {
+		cfg.t.Fatalf("Leader changes after old leader join the pool!")
+	}
+
+	fmt.Printf("======================= END =======================\n\n")
+}
 
 func TestReElection2A(t *testing.T) {
 	fmt.Printf("==================== 3 SERVERS ====================\n")
@@ -82,6 +82,79 @@ func TestReElection2A(t *testing.T) {
 	// a new leader should be elected
 	fmt.Printf("Checking for a new leader\n")
 	cfg.checkOneLeader()
+
+	fmt.Printf("======================= END =======================\n\n")
+}
+func TestSmallPartitionNoConsensusHidden2A(t *testing.T) {
+	fmt.Printf("==================== 5 SERVERS ====================\n")
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	fmt.Printf("partitioned leaders without consensus\n")
+	fmt.Printf("Basic 1 leader\n")
+	leader1 := cfg.checkOneLeader()
+
+	// if the leader disconnects, a new one should be elected.
+	fmt.Printf("Forming partition2 with leader and 2 nodes\n")
+	set1 := make(IntSet)
+	set1[leader1] = struct{}{}
+	peer1 := (leader1 + 1) % servers
+	set1[peer1] = struct{}{}
+	peer2 := (leader1 + 2) % servers
+	set1[peer2] = struct{}{}
+
+	set2 := make(IntSet)
+	set2[(leader1+3)%servers] = struct{}{}
+	set2[(leader1+4)%servers] = struct{}{}
+
+	cfg.disconnect_partition(set1)
+
+	time.Sleep(RaftElectionTimeout)
+
+	cfg.checkNoLeaderInPartition(set2)
+
+	// a new leader should be elected
+
+	fmt.Printf("======================= END =======================\n\n")
+}
+
+func TestLargePartitionNoConsensusHidden2A(t *testing.T) {
+	fmt.Printf("==================== 11 SERVERS ====================\n")
+	servers := 11
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	fmt.Printf("partitioned leaders without consensus\n")
+	fmt.Printf("Basic 1 leader\n")
+	leader1 := cfg.checkOneLeader()
+
+	// if the leader disconnects, a new one should be elected.
+	fmt.Printf("Forming partition2 with leader and 2 nodes\n")
+	set1 := make(IntSet)
+	set1[leader1] = struct{}{}
+	peer1 := (leader1 + 1) % servers
+	set1[peer1] = struct{}{}
+	peer2 := (leader1 + 2) % servers
+	set1[peer2] = struct{}{}
+	set1[(leader1+3)%servers] = struct{}{}
+	set1[(leader1+4)%servers] = struct{}{}
+	set1[(leader1+5)%servers] = struct{}{}
+	set1[(leader1+6)%servers] = struct{}{}
+
+	set2 := make(IntSet)
+	set2[(leader1+7)%servers] = struct{}{}
+	set2[(leader1+8)%servers] = struct{}{}
+	set2[(leader1+9)%servers] = struct{}{}
+	set2[(leader1+10)%servers] = struct{}{}
+
+	cfg.disconnect_partition(set1)
+
+	time.Sleep(RaftElectionTimeout)
+
+	cfg.checkNoLeaderInPartition(set2)
+
+	// a new leader should be elected
 
 	fmt.Printf("======================= END =======================\n\n")
 }

@@ -44,7 +44,7 @@ import (
 
 // Set to false to disable debug logs completely
 // Make sure to set kEnableDebugLogs to false before submitting
-const kEnableDebugLogs = true
+const kEnableDebugLogs = false
 
 // Set to true to log to stdout instead of file
 const kLogToStdout = true
@@ -466,7 +466,6 @@ func (rf *Raft) ProcessCandidateState() {
 }
 
 func (rf *Raft) ProcessElection(Term int, pid int, leader_signal chan bool) {
-	map_channel = make(map[string]chan bool)
 
 	rf.logger.Println("running pid", pid)
 	vote_signal := make(chan bool, len(rf.peers)-1)
