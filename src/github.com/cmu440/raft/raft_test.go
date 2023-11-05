@@ -40,6 +40,30 @@ func TestInitialElection2A(t *testing.T) {
 	fmt.Printf("======================= END =======================\n\n")
 }
 
+//func TestLeaderConsistencyHidden2A(t *testing.T) {
+//	fmt.Printf("==================== 3 SERVERS ====================\n")
+//	servers := 3
+//	cfg := make_config(t, servers, false)
+//	defer cfg.cleanup()
+//	fmt.Printf("Basic 1 leader\n")
+//	leader1 := cfg.checkOneLeader()
+//	fmt.Printf("Disconnecting leader\n")
+//	cfg.disconnect(leader1)
+//
+//	fmt.Printf("Checking for a new leader\n")
+//	leader2 := cfg.checkOneLeader()
+//	fmt.Printf("Reconnecting old leader\n")
+//	cfg.connect(leader1)
+//	fmt.Printf("Checking current leader\n")
+//	current := cfg.checkOneLeader()
+//
+//	if current != leader2 {
+//		cfg.t.Fatalf("Leader changes after old leader join the pool!")
+//	}
+//
+//	fmt.Printf("======================= END =======================\n\n")
+//}
+
 func TestReElection2A(t *testing.T) {
 	fmt.Printf("==================== 3 SERVERS ====================\n")
 	servers := 3
@@ -53,10 +77,62 @@ func TestReElection2A(t *testing.T) {
 	// if the leader disconnects, a new one should be elected.
 	fmt.Printf("Disconnecting leader\n")
 	cfg.disconnect(leader1)
+	cfg.checkOneLeader()
 
 	// a new leader should be elected
 	fmt.Printf("Checking for a new leader\n")
 	cfg.checkOneLeader()
+
+	fmt.Printf("======================= END =======================\n\n")
+}
+
+func TestReElectionHidden2A(t *testing.T) {
+	fmt.Printf("==================== 5 SERVERS ====================\n")
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	fmt.Printf("Hidden Test (2A): Re-election\n")
+	fmt.Printf("Basic 1 leader\n")
+	leader1 := cfg.checkOneLeader()
+	fmt.Printf("Basic 1 leader is %d \n", leader1)
+
+	// if the leader disconnects, a new one should be elected.
+	fmt.Printf("Disconnecting leader\n")
+	cfg.disconnect(leader1)
+	leader2 := cfg.checkOneLeader()
+	fmt.Printf("Reconnecting leader\n")
+	cfg.connect(leader1)
+	cfg.checkOneLeader()
+	fmt.Printf("Waiting a bit\n")
+	fmt.Printf("Disconnecting leader+peers\n")
+	fmt.Printf("check leader\n")
+	set := make(IntSet)
+	set[leader2] = struct{}{}
+	peer1 := (leader2 + 1) % servers
+	set[peer1] = struct{}{}
+	peer2 := (leader2 + 2) % servers
+	set[peer2] = struct{}{}
+
+	fmt.Printf("Disconnect leader is %d Peer1 is %d Peer2 is %d\n", leader2, peer1, peer2)
+
+	cfg.disconnect_partition(set)
+	fmt.Printf("wait\n")
+	time.Sleep(RaftElectionTimeout)
+	//time.Sleep(RaftElectionTimeout)
+
+	cfg.checkNoLeader()
+
+	//cfg.disconnect((leader2 + 1) % servers)
+	//fmt.Printf("check Follower 1\n")
+	//
+	//cfg.disconnect((leader2 + 2) % servers)
+	//fmt.Printf("check Follower 2\n")
+	//cfg.checkOneLeader()
+	//fmt.Printf("Disconnecting leader\n")
+	//cfg.disconnect(leader2)
+	//fmt.Printf("check leader2\n")
+	//cfg.checkOneLeader()
 
 	fmt.Printf("======================= END =======================\n\n")
 }
