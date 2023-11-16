@@ -246,6 +246,7 @@ func TestFailAgree2B(t *testing.T) {
 	// follower network disconnection
 	fmt.Printf("Checking one leader\n")
 	leader := cfg.checkOneLeader()
+	fmt.Printf("Disconnect peer %d \n", (leader+1)%servers)
 	cfg.disconnect((leader + 1) % servers)
 
 	fmt.Printf("Checking agreement with one disconnected peer\n")
@@ -257,8 +258,10 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(105, servers-1)
 
 	// re-connect
+	fmt.Printf(" Reconnected server\n")
 	cfg.connect((leader + 1) % servers)
 	fmt.Printf("Checking with one reconnected server\n")
+
 	// agree with full set of servers?
 	cfg.one(106, servers)
 	time.Sleep(RaftElectionTimeout)
@@ -266,7 +269,138 @@ func TestFailAgree2B(t *testing.T) {
 
 	fmt.Printf("======================= END =======================\n\n")
 }
+func TestRejoinHidden2B(t *testing.T) {
+	fmt.Printf("==================== 5 SERVERS ====================\n")
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
 
+	fmt.Printf("rejoin of partitioned leader\n")
+
+	fmt.Printf("Checking agreement\n")
+	cfg.one(101, servers)
+
+	// follower network disconnection
+	fmt.Printf("Checking one leader\n")
+	leader := cfg.checkOneLeader()
+	fmt.Printf("Disconnect leader\n")
+	cfg.disconnect(leader)
+	time.Sleep(RaftElectionTimeout)
+	leader2 := cfg.checkOneLeader()
+
+	fmt.Printf("Sending 3 commands to disconnected leader\n")
+	index, _, ok := cfg.rafts[leader].PutCommand(102)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 2 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+	index, _, ok = cfg.rafts[leader].PutCommand(103)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 3 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+	index, _, ok = cfg.rafts[leader].PutCommand(104)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 4 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+
+	// agree despite two disconnected servers?
+
+	fmt.Printf("Checking agreement with to new leader\n")
+	cfg.one(105, servers-1)
+	fmt.Printf("Disconnecting new leader\n")
+	cfg.disconnect(leader2)
+	fmt.Printf("Connecting first disconnected leader\n")
+
+	cfg.connect(leader)
+
+	time.Sleep(2 * RaftElectionTimeout)
+
+	//leader3 := cfg.checkOneLeader()
+
+	cfg.one(1000, servers-1)
+
+	// re-connect
+	//cfg.connect((leader + 1) % servers)
+	//fmt.Printf("Checking with one reconnected server\n")
+	//// agree with full set of servers?
+	//cfg.one(106, servers)
+	//time.Sleep(RaftElectionTimeout)
+	//cfg.one(107, servers)
+
+	fmt.Printf("======================= END =======================\n\n")
+}
+func TestPartitionRejoinHidden2B(t *testing.T) {
+	fmt.Printf("==================== 3 SERVERS ====================\n")
+	fmt.Printf("Hidden Test (2B): more strict check on rejoin of partitioned nodes\n")
+	servers := 3
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	fmt.Printf("Checking agreement\n")
+	cfg.one(101, servers)
+
+	// follower network disconnection
+	fmt.Printf("Checking one leader\n")
+	leader := cfg.checkOneLeader()
+	fmt.Printf("Disconnect leader\n")
+	cfg.disconnect(leader)
+	leader2 := cfg.checkOneLeader()
+
+	fmt.Printf("Sending 3 commands to disconnected leader\n")
+	index, _, ok := cfg.rafts[leader].PutCommand(102)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 2 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+	index, _, ok = cfg.rafts[leader].PutCommand(103)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 3 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+	index, _, ok = cfg.rafts[leader].PutCommand(104)
+	if !ok {
+		t.Fatalf("Leader rejected PutCommand()")
+	}
+	if index != 4 {
+		t.Fatalf("Expected index 2, got %v", index)
+	}
+
+	// agree despite two disconnected servers?
+
+	fmt.Printf("Disconnecting new leader\n")
+	cfg.disconnect(leader2)
+	fmt.Printf("Connecting first disconnected leader\n")
+
+	cfg.connect(leader)
+
+	//leader3 := cfg.checkOneLeader()
+	fmt.Printf("expect leader\n")
+	cfg.checkOneLeader()
+	fmt.Printf("check agreenment\n")
+	cfg.one(1000, servers-1)
+
+	// re-connect
+	//cfg.connect((leader + 1) % servers)
+	//fmt.Printf("Checking with one reconnected server\n")
+	//// agree with full set of servers?
+	//cfg.one(106, servers)
+	//time.Sleep(RaftElectionTimeout)
+	//cfg.one(107, servers)
+
+	fmt.Printf("======================= END =======================\n\n")
+}
 func TestFailNoAgree2B(t *testing.T) {
 	fmt.Printf("==================== 5 SERVERS ====================\n")
 	servers := 5
