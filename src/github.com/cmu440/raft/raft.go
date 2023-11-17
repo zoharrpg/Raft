@@ -115,9 +115,6 @@ type Raft struct {
 
 	matchIndex []int
 
-	vote_count    int
-	leader_signal chan bool
-
 	// TODO - Your data here (2A, 2B).
 	// Look at the Raft paper's Figure 2 for a description of what
 	// state a Raft peer should maintain
@@ -159,12 +156,31 @@ type RequestVoteArgs struct {
 // Example RequestVote RPC reply structure.
 //
 // # Please note: Field names must start with capital letters!
+// The RequestVoteReply type is used to store the response to a request for vote in a distributed
+// consensus algorithm.
+// @property {int} Term - The Term property represents the current term of the candidate requesting the
+// vote. It is an integer value that is used to keep track of the current election term.
+// @property {bool} VoteGranted - A boolean value indicating whether the vote has been granted or not.
 type RequestVoteReply struct {
 	Term        int
 	VoteGranted bool
 
 	// TODO - Your data here (2A)
 }
+
+// The `AppendEntriesArgs` type represents the arguments for an append entries RPC call in a
+// distributed system.
+// @property {int} Term - The current term of the leader sending the AppendEntries RPC.
+// @property {int} LeaderId - The LeaderId property represents the unique identifier of the leader in a
+// distributed system.
+// @property {int} PrevLogIndex - PrevLogIndex is the index of the log entry immediately preceding the
+// new entries being sent in the AppendEntries RPC.
+// @property {int} PrevLogTerm - PrevLogTerm is the term of the log entry immediately preceding the new
+// log entries being sent in the AppendEntries RPC.
+// @property {[]LogStruct} Entries - The `Entries` property is a slice of `LogStruct` objects. It
+// represents the log entries that the leader wants to append to the follower's log.
+// @property {int} LeaderCommit - LeaderCommit is the index of the highest log entry known to be
+// committed by the leader.
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
@@ -173,6 +189,16 @@ type AppendEntriesArgs struct {
 	Entries      []LogStruct
 	LeaderCommit int
 }
+
+// The AppendEntriesReply type represents a response to an append entries request in the Go programming
+// language.
+// @property {int} Term - The "Term" property represents the term of the leader that sent the
+// AppendEntries RPC (Remote Procedure Call). It is an integer value that is used to ensure that
+// followers are up to date and do not fall behind in terms of the leader's log.
+// @property {bool} Success - A boolean value indicating whether the AppendEntries RPC request was
+// successful or not. If Success is true, it means that the log entries were successfully appended to
+// the receiver's log. If Success is false, it means that the receiver rejected the log entries due to
+// inconsistencies or other reasons.
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
@@ -182,6 +208,8 @@ type AppendEntriesReply struct {
 // ===========
 //
 // Example RequestVote RPC handler
+// The above code is implementing the RequestVote RPC method for a Raft node in a distributed consensus
+// algorithm.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO - Your code here (2A, 2B)
 
@@ -191,28 +219,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
+	if args.Term > rf.getTerm() && (rf.stateInfo() == LEADER || rf.stateInfo() == CANDIDATE) {
+		rf.setTerm(args.Term)
+		rf.setVotedFor(-1)
+		rf.step_down_signal <- 1
+	}
 	if args.Term > rf.getTerm() && rf.stateInfo() == FOLLOWER {
 		rf.logger.Println("Follower change term to ", rf.getTerm())
 		rf.setTerm(args.Term)
 		rf.setVotedFor(-1)
 	}
 
-	if rf.getVoteFor() == -1 || rf.getVoteFor() == args.CandidateId {
+	if (rf.getVoteFor() == -1 || rf.getVoteFor() == args.CandidateId) && rf.stateInfo() == FOLLOWER {
 
 		rf.logger.Printf("Follower %d vote to candidate id %d\n", rf.me, args.CandidateId)
 		lastIndex, lastTerm := rf.getLastLogInfo()
 
-		if lastTerm > args.LastLogTerm || (lastTerm == args.LastLogTerm && lastIndex > args.LastLogIndex) {
-			reply.VoteGranted = false
-
-			rf.logger.Println("vote false")
-
-		} else {
+		if lastTerm < args.LastLogTerm || (lastTerm == args.LastLogTerm && lastIndex <= args.LastLogIndex) {
 			reply.VoteGranted = true
 			rf.setVotedFor(args.CandidateId)
 			rf.hearthbeat_signal <- 1
 
 			rf.logger.Println("vote correct")
+
+		} else {
+			reply.VoteGranted = false
+
+			rf.logger.Println("vote false")
 
 		}
 
@@ -292,6 +325,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 //}
 
+// The above code is implementing the `AppendEntries` method for a Raft consensus algorithm in Go. This
+// method is called by the leader to replicate log entries on the followers.
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//rf.logger.Println("The Follower state is Term:", rf.getTerm(), "state", rf.stateInfo(), "Length", len(args.Entries))
 
@@ -301,7 +336,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 
 	}
-	if args.Term >= rf.getTerm() && rf.stateInfo() == FOLLOWER {
+	if rf.stateInfo() == FOLLOWER {
 		rf.setTerm(args.Term)
 		rf.hearthbeat_signal <- 1
 	}
@@ -332,17 +367,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Success = true
 
 			rf.setEntries(args.Entries, args.PrevLogIndex)
+			if args.LeaderCommit > rf.getCommitIndex() {
+				//current_i, _ := rf.getLastLogInfo()
+				rf.setCommitIndex(args.LeaderCommit)
+				go rf.ProcessCommit()
+
+			}
 
 		} else {
-			//rf.logger.Println("id ", rf.me, "received", args.Entries)
-			//rf.logger.Println("argIndex is ", args.PrevLogIndex, "args PrevLogTerm is ", args.PrevLogTerm)
-			//rf.logger.Println("remove entries")
-			//rf.logger.Println("The rf is ", rf.logs)
 
-			rf.removeEntries(args.PrevLogIndex - 1)
-
-			//rf.logger.Println("after is ", rf.logs)
-			//rf.logger.Println("removed entries is ", rf.logs)
 			reply.Term = rf.getTerm()
 			reply.Success = false
 		}
@@ -352,14 +385,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//rf.logger.Println("The Follower state is Term:", rf.getTerm(), "state", rf.stateInfo(), "Length", len(args.Entries))
 	//rf.logger.Println("The LeaderCommit is ", args.LeaderCommit)
 	//rf.logger.Println("The rfCommit is ", rf.getCommitIndex())
-	if args.LeaderCommit > rf.getCommitIndex() {
-		current_i, _ := rf.getLastLogInfo()
-		rf.setCommitIndex(min(args.LeaderCommit, current_i))
-		go rf.ProcessCommit()
 
-	}
-
-}
+} // The above code is implementing the `sendAppendEntries` method for the Raft consensus algorithm in
+// Go. This method is responsible for sending AppendEntries RPCs to other servers in the cluster.
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
@@ -378,6 +406,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.mux.Lock()
 			if len(rf.logs) > 0 {
 				rf.matchIndex[server] = rf.logs[len(rf.logs)-1].CommandInfo.Index
+			} else {
+				rf.matchIndex[server] = 0
 			}
 			N := rf.matchIndex[server]
 			rf.nextIndex[server] = N + 1
@@ -403,7 +433,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 		} else {
 
-			if rf.getNextIndex(server) > 1 {
+			if rf.getNextIndex(server) > 1 && rf.stateInfo() == LEADER {
 				rf.mux.Lock()
 
 				rf.nextIndex[server]--
@@ -413,13 +443,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					prev_term = rf.logs[next_index-2].Term
 				}
 				entries := rf.logs[next_index-1:]
-				args := AppendEntriesArgs{Term: args.Term, LeaderId: rf.me, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: args.LeaderCommit, Entries: entries}
+				args := AppendEntriesArgs{Term: args.Term, LeaderId: args.LeaderId, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: args.LeaderCommit, Entries: entries}
 				reply := AppendEntriesReply{}
 				rf.mux.Unlock()
+
 				go rf.sendAppendEntries(server, &args, &reply)
 
 			}
-
 		}
 
 	}
@@ -484,22 +514,33 @@ func (rf *Raft) PutCommand(command interface{}) (int, int, bool) {
 func (rf *Raft) Stop() {
 	// TODO - Your code here, if desired
 }
+
+// The above code is defining a method called "initState" for the "Raft" struct in the Go programming
+// language. This method takes a parameter called "state" of type "State".
 func (rf *Raft) initState(state State) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 
 	rf.state = state
 	rf.votedFor = -1
-	rf.vote_count = 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
 }
+
+// The above code is initializing the state of a Raft leader. It sets the Raft's state to LEADER,
+// resets the votedFor field to -1, and sets the commitIndex and lastApplied fields to 0. It then
+// determines the index of the last log entry, and initializes the nextIndex and matchIndex arrays for
+// each peer in the Raft cluster. The nextIndex array is initialized to the index of the last log entry
+// plus 1, and the matchIndex array is initialized to 0 for each peer.
 func (rf *Raft) initLeaderState() {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 
 	rf.state = LEADER
 	rf.votedFor = -1
-	rf.vote_count = 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	index := 0
 
 	if len(rf.logs) > 0 {
@@ -518,10 +559,11 @@ func (rf *Raft) initLeaderState() {
 
 }
 
+// The above code is implementing the behavior of a follower in a Raft consensus algorithm.
 func (rf *Raft) ProcessFollowerState() {
 
 	rf.initState(FOLLOWER)
-	//rf.Clear()
+	rf.Clear()
 	// reset data
 
 	for {
@@ -540,9 +582,10 @@ func (rf *Raft) ProcessFollowerState() {
 
 }
 
+// The above code is implementing the logic for the candidate state in the Raft consensus algorithm.
 func (rf *Raft) ProcessCandidateState() {
 	rf.initState(CANDIDATE)
-	//rf.Clear()
+	rf.Clear()
 
 	rf.setVotedFor(rf.me)
 	t := rf.getTerm() + 1
@@ -550,7 +593,6 @@ func (rf *Raft) ProcessCandidateState() {
 	lastIndex, lastTerm := rf.getLastLogInfo()
 	vote_count := 1
 	vote_signal := make(chan bool)
-	rf.setVoteCount()
 	for peer := range rf.peers {
 		if peer != rf.me {
 			reply := RequestVoteReply{}
@@ -599,6 +641,10 @@ func (rf *Raft) ProcessCandidateState() {
 
 }
 
+// The above code is a method in the Raft struct that is used to send a RequestVote RPC to a specific
+// server. It takes in the server index, the arguments for the RequestVote RPC, a reply struct to store
+// the response, and a vote_signal channel to signal whether the vote was granted or not.
+
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, vote_signal chan bool) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	//rf.logger.Println(*reply == RequestVoteReply{})
@@ -615,17 +661,23 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 }
 
+// The above code is implementing the leader state of a Raft consensus algorithm. It initializes the
+// leader state, clears any previous state, and then sends AppendEntries RPCs to all other peers in the
+// cluster. It also sets up a ticker to periodically send heartbeat messages to the followers. If it
+// receives a step down signal (indicating that it should transition to a follower state), it updates
+// its term and transitions to the follower state.
 func (rf *Raft) ProcessLeader() {
 	rf.initLeaderState()
-	//rf.Clear()
+	rf.Clear()
 
 	for peer := range rf.peers {
 		if peer != rf.me {
 			next_index := rf.getNextIndex(peer)
 			prev_term := rf.getLogTerm(next_index - 1)
+			entries := rf.getEntries(next_index - 1)
 
 			commit := rf.getCommitIndex()
-			args := AppendEntriesArgs{Term: rf.getTerm(), LeaderId: rf.me, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: commit}
+			args := AppendEntriesArgs{Term: rf.getTerm(), LeaderId: rf.me, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: commit, Entries: entries}
 			reply := AppendEntriesReply{}
 			rf.logger.Println("Send entries")
 			go rf.sendAppendEntries(peer, &args, &reply)
@@ -683,6 +735,8 @@ func (rf *Raft) ProcessLeader() {
 
 }
 
+// The above code is implementing the `ProcessCommit` function for a Raft consensus algorithm.
+
 func (rf *Raft) ProcessCommit() {
 	rf.mux.Lock()
 	for rf.commitIndex > rf.lastApplied {
@@ -700,15 +754,13 @@ func (rf *Raft) ProcessCommit() {
 
 }
 
+// The above code is defining a method called "Clear" for the Raft struct in the Go programming
+// language. This method is used to clear any pending signals in the Raft instance.
 func (rf *Raft) Clear() {
 	for {
 		select {
 		case <-rf.hearthbeat_signal:
 		case <-rf.step_down_signal:
-		case <-rf.leader_signal:
-		//case <-rf.vote_signal:
-		//case <-rf.leader_signal:
-		//case <-rf.stop_election_signal:
 		default:
 			return
 
@@ -736,6 +788,8 @@ func (rf *Raft) Clear() {
 //
 // NewPeer() must return quickly, so it should start Goroutines
 // for any long-running work
+// The function initializes a new Raft peer with the given parameters and starts a goroutine to process
+// the follower state.
 func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
@@ -778,8 +832,6 @@ func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.logs = make([]LogStruct, 0)
-	rf.vote_count = 0
-	rf.leader_signal = make(chan bool)
 
 	go rf.ProcessFollowerState()
 
@@ -788,48 +840,88 @@ func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 	return rf
 }
 
+// The RandIntBetween function generates a random integer between a given minimum and maximum value.
 func RandIntBetween(min, max int) int {
 
 	return min + rand.Intn(max-min)
 }
+
+// The above code is defining a method called `setVotedFor` for the `Raft` struct in the Go programming
+// language. This method takes an integer parameter `candidateID` and is used to set the `votedFor`
+// field of the `Raft` struct to the value of `candidateID`. The method is protected by a mutex to
+// ensure thread safety.
 func (rf *Raft) setVotedFor(candidateID int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	rf.votedFor = candidateID
 
 }
+
+// The above code is defining a method called `getTerm()` for the `Raft` struct in the Go programming
+// language. This method is used to retrieve the current term of the `Raft` instance. It acquires a
+// lock on the `rf` object, reads the value of the `currentTerm` field, and then releases the lock
+// before returning the value.
 func (rf *Raft) getTerm() int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	return rf.currentTerm
 }
+
+// The above code is defining a method called `stateInfo` for the `Raft` struct in the Go programming
+// language. This method returns the current state of the `Raft` object. It acquires a lock on the `rf`
+// object using a mutex to ensure thread safety, and then returns the `state` field of the `rf` object.
 func (rf *Raft) stateInfo() State {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	return rf.state
 }
+
+// The above code is defining a method called `setState` for the `Raft` struct in the Go programming
+// language. This method takes a parameter `state` of type `State` and is used to set the `state` field
+// of the `Raft` struct to the provided `state` value. The method is using a mutex to ensure thread
+// safety while modifying the `state` field.
 func (rf *Raft) setState(state State) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	rf.state = state
 }
+
+// The above code is defining a method called `setTerm` for the `Raft` struct in the Go programming
+// language. This method takes an integer parameter called `term` and is used to set the `currentTerm`
+// field of the `Raft` struct to the value of `term`. The method is protected by a mutex to ensure
+// thread safety.
 func (rf *Raft) setTerm(term int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	rf.currentTerm = term
 
 }
+
+// The above code is defining a method called `getCommitIndex()` for the `Raft` struct in the Go
+// programming language. This method is used to retrieve the value of the `commitIndex` field of the
+// `Raft` struct. It acquires a lock on the `Raft` struct using a mutex, reads the value of
+// `commitIndex`, and then releases the lock before returning the value.
 func (rf *Raft) getCommitIndex() int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	return rf.commitIndex
 }
+
+// The above code is defining a method called `setCommitIndex` for the `Raft` struct in the Go
+// programming language. This method takes an integer `i` as a parameter and is used to set the
+// `commitIndex` field of the `Raft` struct to the value of `i`. The method is protected by a mutex to
+// ensure thread safety.
 func (rf *Raft) setCommitIndex(i int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	rf.commitIndex = i
 
 }
+
+// The above code is defining a method called `getLastLogInfo` for the `Raft` struct in Go. This method
+// returns the index and term of the last log entry in the `logs` slice of the `Raft` struct. If the
+// `logs` slice is not empty, it retrieves the index and term of the last log entry. If the `logs`
+// slice is empty, it returns 0 for the index and -1 for the term.
 func (rf *Raft) getLastLogInfo() (int, int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -845,11 +937,16 @@ func (rf *Raft) getLastLogInfo() (int, int) {
 	return index, term
 }
 
+// The above code is defining a method called `getNextIndex` for a struct type `Raft`. This method
+// takes an integer parameter `server` and returns an integer value.
 func (rf *Raft) getNextIndex(server int) int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	return rf.nextIndex[server]
 }
+
+// The above code is defining a method called `getLogTerm` for the `Raft` struct in Go. This method
+// takes an `index` parameter and returns the term of the log entry at that index.
 
 func (rf *Raft) getLogTerm(index int) int {
 	rf.mux.Lock()
@@ -860,6 +957,9 @@ func (rf *Raft) getLogTerm(index int) int {
 	}
 	return term
 }
+
+// The above code is defining a method called `getLogIndex` for the `Raft` struct in Go. This method
+// takes an `index` parameter and returns the index of the log entry at that position.
 func (rf *Raft) getLogIndex(index int) int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -869,12 +969,19 @@ func (rf *Raft) getLogIndex(index int) int {
 	}
 	return i
 }
+
+// The above code is a method implementation in the Raft struct in the Go programming language. It is
+// called `getEntries` and takes an integer `start` as a parameter.
 func (rf *Raft) getEntries(start int) []LogStruct {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	return rf.logs[start:]
 
 }
+
+// The above code is defining a method called "setEntries" for the Raft struct in the Go programming
+// language. This method takes in a slice of LogStruct objects called "entries" and an integer called
+// "index".
 func (rf *Raft) setEntries(entries []LogStruct, index int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -884,6 +991,9 @@ func (rf *Raft) setEntries(entries []LogStruct, index int) {
 
 }
 
+// The above code is defining a method called `removeEntries` for the `Raft` struct in Go. This method
+// takes an integer parameter `end`.
+
 func (rf *Raft) removeEntries(end int) {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -891,6 +1001,9 @@ func (rf *Raft) removeEntries(end int) {
 
 }
 
+// The above code is defining a method called `getLength()` for the `Raft` struct in the Go programming
+// language. This method returns the length of the `logs` slice in the `Raft` struct. It uses a mutex
+// to ensure thread safety when accessing the `logs` slice.
 func (rf *Raft) getLength() int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -898,6 +1011,11 @@ func (rf *Raft) getLength() int {
 
 }
 
+// The above code is defining a method called `getVoteFor()` for the `Raft` struct in the Go
+// programming language. This method is used to retrieve the value of the `votedFor` field in the
+// `Raft` struct. The `votedFor` field represents the candidate ID that this Raft server has voted for
+// in the current term. The method acquires a lock on the `Raft` struct to ensure thread safety and
+// then returns the value of `votedFor`.
 func (rf *Raft) getVoteFor() int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -905,6 +1023,9 @@ func (rf *Raft) getVoteFor() int {
 
 }
 
+// The above code is defining a method called `getLastApplied` for the `Raft` struct in the Go
+// programming language. This method returns the value of the `lastApplied` field of the `Raft` struct.
+// The method is using a mutex to ensure thread safety when accessing the `lastApplied` field.
 func (rf *Raft) getLastApplied() int {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
@@ -912,20 +1033,11 @@ func (rf *Raft) getLastApplied() int {
 
 }
 
+// The above code is defining a method called `setLastApplied` for the `Raft` struct in the Go
+// programming language. This method is used to increment the `lastApplied` field of the `Raft` struct
+// by 1. The method is protected by a mutex to ensure thread safety.
 func (rf *Raft) setLastApplied() {
 	rf.mux.Lock()
 	defer rf.mux.Unlock()
 	rf.lastApplied++
-}
-
-func (rf *Raft) getVoteCount() int {
-	rf.mux.Lock()
-	defer rf.mux.Unlock()
-	return rf.vote_count
-
-}
-func (rf *Raft) setVoteCount() {
-	rf.mux.Lock()
-	defer rf.mux.Unlock()
-	rf.vote_count++
 }
