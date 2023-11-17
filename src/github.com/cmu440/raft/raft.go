@@ -184,41 +184,32 @@ type AppendEntriesReply struct {
 // Example RequestVote RPC handler
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO - Your code here (2A, 2B)
+
 	// step down when find higher term
 	if args.Term < rf.getTerm() {
 		reply.Term = rf.getTerm()
 		reply.VoteGranted = false
 		return
 	}
-	if args.Term > rf.getTerm() && (rf.stateInfo() == CANDIDATE || rf.stateInfo() == LEADER) {
+	if args.Term > rf.getTerm() && rf.stateInfo() == FOLLOWER {
+		rf.logger.Println("Follower change term to ", rf.getTerm())
 		rf.setTerm(args.Term)
 		rf.setVotedFor(-1)
-		rf.logger.Println("In request vote down level to Follower")
-		rf.step_down_signal <- args.Term
-		reply.VoteGranted = false
-
-		reply.Term = rf.getTerm()
-
-		////reply.VoteGranted = false
-		//reply.Term = rf.getTerm()
-		//return
 	}
 
-	if args.Term > rf.getTerm() && rf.stateInfo() == FOLLOWER {
-		rf.setTerm(args.Term)
-		rf.setVotedFor(args.CandidateId)
-		rf.logger.Println("Follower change term to ", rf.getTerm())
-		rf.setVotedFor(args.CandidateId)
+	if rf.getVoteFor() == -1 || rf.getVoteFor() == args.CandidateId {
 
 		rf.logger.Printf("Follower %d vote to candidate id %d\n", rf.me, args.CandidateId)
 		lastIndex, lastTerm := rf.getLastLogInfo()
 
 		if lastTerm > args.LastLogTerm || (lastTerm == args.LastLogTerm && lastIndex > args.LastLogIndex) {
 			reply.VoteGranted = false
+
 			rf.logger.Println("vote false")
 
 		} else {
 			reply.VoteGranted = true
+			rf.setVotedFor(args.CandidateId)
 			rf.hearthbeat_signal <- 1
 
 			rf.logger.Println("vote correct")
@@ -238,6 +229,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.getTerm()
 
 	return
+
+	//&& rf.stateInfo() == FOLLOWER
+	//&& (rf.getVoteFor() == -1 || rf.getVoteFor() == args.CandidateId)
 
 }
 
@@ -297,31 +291,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //	}
 //
 //}
-
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, vote_signal chan bool) {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	//rf.logger.Println(*reply == RequestVoteReply{})
-	//rf.logger.Println("ok state is ", ok)
-
-	if !ok {
-		vote_signal <- false
-		rf.logger.Println("server down")
-		return
-	}
-
-	//if reply.Term > rf.getTerm() {
-	//	vote_signal <- reply.VoteGranted
-	//	// may cause problem
-	//
-	//	rf.setTerm(reply.Term)
-	//	rf.step_down_signal <- reply.Term
-	//	return
-	//
-	//}
-	vote_signal <- reply.VoteGranted
-	return
-
-}
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//rf.logger.Println("The Follower state is Term:", rf.getTerm(), "state", rf.stateInfo(), "Length", len(args.Entries))
@@ -433,21 +402,23 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			go rf.ProcessCommit()
 
 		} else {
-			rf.mux.Lock()
-			rf.nextIndex[server]--
-			//next_index := rf.nextIndex[server]
-			//prev_term := -1
-			//if next_index-2 >= 0 {
-			//	prev_term = rf.logs[next_index-2].Term
-			//}
 
-			//prev_term = rf.logs[next_index-2].Term
-			//commit := rf.commitIndex
-			//entries := rf.logs[next_index-1:]
-			//args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: commit, Entries: entries}
-			//reply := AppendEntriesReply{}
-			rf.mux.Unlock()
-			//go rf.sendAppendEntries(server, &args, &reply)
+			if rf.getNextIndex(server) > 1 {
+				rf.mux.Lock()
+
+				rf.nextIndex[server]--
+				next_index := rf.nextIndex[server]
+				prev_term := -1
+				if next_index-2 >= 0 {
+					prev_term = rf.logs[next_index-2].Term
+				}
+				entries := rf.logs[next_index-1:]
+				args := AppendEntriesArgs{Term: args.Term, LeaderId: rf.me, PrevLogIndex: next_index - 1, PrevLogTerm: prev_term, LeaderCommit: args.LeaderCommit, Entries: entries}
+				reply := AppendEntriesReply{}
+				rf.mux.Unlock()
+				go rf.sendAppendEntries(server, &args, &reply)
+
+			}
 
 		}
 
@@ -576,86 +547,70 @@ func (rf *Raft) ProcessCandidateState() {
 	rf.setVotedFor(rf.me)
 	t := rf.getTerm() + 1
 	rf.setTerm(t)
-	leader_signal := make(chan bool)
-	//current_signal := make(chan bool)
-	go rf.ProcessElection(rf.getTerm(), t, leader_signal)
-	rf.logger.Println("Process Election id is", t)
-
-	select {
-
-	case <-leader_signal:
-		rf.logger.Printf("Candidate %d to Leader", rf.me)
-		go rf.ProcessLeader()
-		return
-
-	case term := <-rf.step_down_signal:
-		rf.setTerm(term)
-
-		rf.logger.Printf("Candidate %d to follower", rf.me)
-		go rf.ProcessFollowerState()
-		return
-
-	case <-time.After(time.Duration(rf.ElectionTimeout) * time.Millisecond):
-		rf.logger.Printf("Candidate %d reelection", rf.me)
-
-		go rf.ProcessCandidateState()
-
-		return
-
-	}
-
-}
-
-//	func (rf *Raft) ProcessElection(Term int, pid int, current_signal chan bool) {
-//		lastIndex, lastTerm := rf.getLastLogInfo()
-//		count := 1
-//		for peer := range rf.peers {
-//			if peer != rf.me {
-//				reply := RequestVoteReply{}
-//				args := RequestVoteArgs{CandidateId: rf.me, Term: Term, LastLogIndex: lastIndex, LastLogTerm: lastTerm}
-//
-//				go rf.sendRequestVote(peer, &args, &reply)
-//
-//			}
-//		}
-//
-// }
-func (rf *Raft) ProcessElection(Term int, pid int, leader_signal chan bool) {
-
-	vote_signal := make(chan bool, len(rf.peers)-1)
 	lastIndex, lastTerm := rf.getLastLogInfo()
+	vote_count := 1
+	vote_signal := make(chan bool)
+	rf.setVoteCount()
 	for peer := range rf.peers {
 		if peer != rf.me {
 			reply := RequestVoteReply{}
-			args := RequestVoteArgs{CandidateId: rf.me, Term: Term, LastLogIndex: lastIndex, LastLogTerm: lastTerm}
-			rf.logger.Println(args)
+			args := RequestVoteArgs{CandidateId: rf.me, Term: t, LastLogIndex: lastIndex, LastLogTerm: lastTerm}
 
 			go rf.sendRequestVote(peer, &args, &reply, vote_signal)
 
 		}
 	}
-	vote_count := 1
-	vote_success := false
 
-	for i := 0; i < len(rf.peers)-1; i++ {
+	for {
 		//rf.logger.Printf("Election pid is %d Vote Pending\n", pid)
-		isVoted := <-vote_signal
+		select {
+		case term := <-rf.step_down_signal:
+			rf.setTerm(term)
+			rf.setVotedFor(-1)
 
-		if isVoted && !vote_success {
-			//rf.logger.Println("Pid is", pid)
+			rf.logger.Printf("Candidate %d to follower", rf.me)
+			go rf.ProcessFollowerState()
+			return
 
-			vote_count++
+		case isVoted := <-vote_signal:
+			if isVoted {
 
-			if vote_count > len(rf.peers)/2 {
-				leader_signal <- true
-				vote_success = true
-				close(leader_signal)
-				//rf.logger.Println("Leader selected")
+				vote_count++
+
+				if vote_count > len(rf.peers)/2 {
+					go rf.ProcessLeader()
+					return
+
+					//rf.logger.Println("Leader selected")
+
+				}
 
 			}
+		case <-time.After(time.Duration(rf.ElectionTimeout) * time.Millisecond):
+			rf.logger.Printf("Candidate %d reelection", rf.me)
+
+			go rf.ProcessCandidateState()
+
+			return
 
 		}
 
+	}
+
+}
+
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, vote_signal chan bool) {
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	//rf.logger.Println(*reply == RequestVoteReply{})
+	//rf.logger.Println("ok state is ", ok)
+
+	if ok {
+		if reply.Term > rf.getTerm() {
+			rf.step_down_signal <- reply.Term
+			return
+		}
+
+		vote_signal <- reply.VoteGranted
 	}
 
 }
@@ -814,8 +769,8 @@ func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 	rf.currentTerm = 0
 
 	rf.state = FOLLOWER
-	rf.Interval = 150
-	rf.ElectionTimeout = RandIntBetween(300, 600)
+	rf.Interval = 100
+	rf.ElectionTimeout = RandIntBetween(300, 500)
 	//rf.vote_signal = make(chan bool)
 	rf.step_down_signal = make(chan int)
 
