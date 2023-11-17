@@ -222,6 +222,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.getTerm() && (rf.stateInfo() == LEADER || rf.stateInfo() == CANDIDATE) {
 		rf.setTerm(args.Term)
 		rf.setVotedFor(-1)
+		rf.setState(FOLLOWER)
 		rf.step_down_signal <- 1
 	}
 	if args.Term > rf.getTerm() && rf.stateInfo() == FOLLOWER {
@@ -344,10 +345,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term >= rf.getTerm() && rf.stateInfo() == CANDIDATE {
 		rf.setTerm(args.Term)
+		rf.setVotedFor(-1)
+		rf.setState(FOLLOWER)
 		rf.step_down_signal <- args.Term
 	}
 	if args.Term > rf.getTerm() && rf.stateInfo() == LEADER {
 		rf.setTerm(args.Term)
+		rf.setVotedFor(-1)
+		rf.setState(FOLLOWER)
 		rf.step_down_signal <- args.Term
 
 	}
@@ -397,6 +402,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 		if reply.Term > rf.getTerm() {
 			rf.logger.Println("Send downlevel")
+			rf.setVotedFor(-1)
+			rf.setState(FOLLOWER)
 
 			rf.step_down_signal <- reply.Term
 			return
@@ -563,7 +570,7 @@ func (rf *Raft) initLeaderState() {
 func (rf *Raft) ProcessFollowerState() {
 
 	rf.initState(FOLLOWER)
-	rf.Clear()
+	//rf.Clear()
 	// reset data
 
 	for {
@@ -585,7 +592,7 @@ func (rf *Raft) ProcessFollowerState() {
 // The above code is implementing the logic for the candidate state in the Raft consensus algorithm.
 func (rf *Raft) ProcessCandidateState() {
 	rf.initState(CANDIDATE)
-	rf.Clear()
+	//rf.Clear()
 
 	rf.setVotedFor(rf.me)
 	t := rf.getTerm() + 1
@@ -652,6 +659,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	if ok {
 		if reply.Term > rf.getTerm() {
+			rf.setVotedFor(-1)
+			rf.setState(FOLLOWER)
 			rf.step_down_signal <- reply.Term
 			return
 		}
@@ -668,7 +677,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // its term and transitions to the follower state.
 func (rf *Raft) ProcessLeader() {
 	rf.initLeaderState()
-	rf.Clear()
+	//rf.Clear()
 
 	for peer := range rf.peers {
 		if peer != rf.me {
@@ -824,7 +833,7 @@ func NewPeer(peers []*rpc.ClientEnd, me int, applyCh chan ApplyCommand) *Raft {
 
 	rf.state = FOLLOWER
 	rf.Interval = 100
-	rf.ElectionTimeout = RandIntBetween(300, 500)
+	rf.ElectionTimeout = RandIntBetween(300, 400)
 	//rf.vote_signal = make(chan bool)
 	rf.step_down_signal = make(chan int)
 
